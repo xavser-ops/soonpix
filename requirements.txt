@@ -1,0 +1,14 @@
+# Face Vectorization API Dependencies
+fastapi==0.109.0
+uvicorn==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+requests==2.31.0
+
+# Computer Vision & ML
+opencv-python-headless==4.9.0.80
+numpy==1.26.3
+insightface==0.7.3
+
+# Use older onnxruntime version compatible with Synology kernel restrictions
+onnxruntime==1.12.1
