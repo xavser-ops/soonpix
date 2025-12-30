@@ -1,6 +1,6 @@
 import base64
 import os
-from typing import Optional
+from typing import Optional, List
 
 import cv2
 import numpy as np
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 app = FastAPI(
     title="Face Vectorization API",
     description="Generate 512-dimension face embeddings using InsightFace/ArcFace",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 app.add_middleware(
@@ -24,9 +24,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialisation du modèle (CPU)
+# Initialisation du modèle
 face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
 face_app.prepare(ctx_id=0, det_size=(640, 640))
+
+# --- Modèles de Données ---
 
 class VectorizeRequest(BaseModel):
     image_url: Optional[str] = None
@@ -38,6 +40,20 @@ class VectorizeResponse(BaseModel):
     face_count: int = 0
     error: Optional[str] = None
     face_bbox: Optional[list] = None
+
+# Nouveau modèle pour la réponse "All Faces"
+class SingleFaceResult(BaseModel):
+    index: int
+    embedding: list
+    bbox: list
+
+class VectorizeAllResponse(BaseModel):
+    success: bool
+    faces: List[SingleFaceResult] = []
+    face_count: int = 0
+    error: Optional[str] = None
+
+# --- Fonctions Utilitaires ---
 
 def load_image_from_url(url: str) -> np.ndarray:
     response = requests.get(url, timeout=30)
@@ -60,8 +76,9 @@ def load_image_from_base64(base64_str: str) -> np.ndarray:
 
 @app.get("/")
 async def root():
-    return {"status": "healthy", "service": "Face Vectorization API"}
+    return {"status": "healthy", "service": "Face Vectorization API", "endpoints": ["/vectorize", "/vectorize-all"]}
 
+# --- Endpoint 1 : Un seul visage (le plus grand) ---
 @app.post("/vectorize", response_model=VectorizeResponse)
 async def vectorize_face(request: VectorizeRequest):
     try:
@@ -77,6 +94,7 @@ async def vectorize_face(request: VectorizeRequest):
         if not faces:
             return VectorizeResponse(success=False, error="No face detected")
         
+        # Prend le plus grand visage
         largest_face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         embedding = largest_face.embedding.tolist()
         
@@ -93,6 +111,46 @@ async def vectorize_face(request: VectorizeRequest):
         
     except Exception as e:
         return VectorizeResponse(success=False, error=str(e))
+
+# --- Endpoint 2 : TOUS les visages (Nouveau) ---
+@app.post("/vectorize-all", response_model=VectorizeAllResponse)
+async def vectorize_all_faces(request: VectorizeRequest):
+    try:
+        if request.image_url:
+            image = load_image_from_url(request.image_url)
+        elif request.image_base64:
+            image = load_image_from_base64(request.image_base64)
+        else:
+            raise HTTPException(status_code=400, detail="Image URL or Base64 required")
+        
+        faces = face_app.get(image)
+        
+        results = []
+        if faces:
+            # Trie les visages de gauche à droite pour garder un ordre logique
+            faces.sort(key=lambda x: x.bbox[0])
+            
+            for i, face in enumerate(faces):
+                embedding = face.embedding.tolist()
+                # Normalisation
+                norm = np.linalg.norm(embedding)
+                if norm > 0:
+                    embedding = (np.array(embedding) / norm).tolist()
+                
+                results.append(SingleFaceResult(
+                    index=i,
+                    embedding=embedding,
+                    bbox=face.bbox.tolist()
+                ))
+        
+        return VectorizeAllResponse(
+            success=True,
+            faces=results,
+            face_count=len(faces)
+        )
+        
+    except Exception as e:
+        return VectorizeAllResponse(success=False, error=str(e))
 
 if __name__ == "__main__":
     import uvicorn
